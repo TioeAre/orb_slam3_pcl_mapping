@@ -1,22 +1,3 @@
-/*
- * <one line to give the program's name and a brief idea of what it does.>
- * Copyright (C) 2016  <copyright holder> <email>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- */
-
 #ifndef POINTCLOUDMAPPING_H
 #define POINTCLOUDMAPPING_H
 
@@ -80,19 +61,11 @@ namespace Mapping {
         typedef pcl::PointXYZRGBA PointT;
         typedef pcl::PointCloud<PointT> PointCloud;
         bool mbuseExact, mbuseCompressed = false;
-        size_t queueSize = 5;
+        size_t queueSize = 10;
     public:
         PointCloudMapper();
         ~PointCloudMapper();
-        void insertKeyFrame(cv::Mat &color, cv::Mat &depth, Eigen::Isometry3f &T);
         void viewer();
-        void getGlobalCloudMap(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &outputMap);
-        void reset();
-        void shutdown();
-        void callback(const sensor_msgs::Image::ConstPtr msgRGB,
-                      const sensor_msgs::Image::ConstPtr msgD, const geometry_msgs::PoseStamped::ConstPtr tcw,
-                      const nav_msgs::Path::ConstPtr path);
-        void boolCallback(const std_msgs::Bool::ConstPtr &if_loop);
 
     protected:
         bool is_loop = false;
@@ -131,8 +104,15 @@ namespace Mapping {
         message_filters::Synchronizer<ExactSyncPolicy> *syncExact;
     protected:
         PointCloud::Ptr generatePointCloud(cv::Mat &color, cv::Mat &depth, Eigen::Isometry3f &T);
-
         void readParam();
+        void getGlobalCloudMap(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &outputMap);
+        void reset();
+        void shutdown();
+        void callback(const sensor_msgs::Image::ConstPtr msgRGB,
+                      const sensor_msgs::Image::ConstPtr msgD, const geometry_msgs::PoseStamped::ConstPtr tcw,
+                      const nav_msgs::Path::ConstPtr path);
+        void boolCallback(const std_msgs::Bool::ConstPtr &if_loop);
+        void insertKeyFrame(cv::Mat &color, cv::Mat &depth, Eigen::Isometry3f &T);
     };
 }
 #endif // POINTCLOUDMAPPING_H
