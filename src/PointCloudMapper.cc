@@ -54,7 +54,6 @@ namespace Mapping {
         mvGlobalPointCloudsPose.push_back(T);
         colorImgs.push_back(color.clone());
         depthImgs.push_back(depth.clone());
-
         mGlobalPointCloudID++;
         mbKeyFrameUpdate = true;
         std::cout << GREEN << "receive a keyframe, id = " << mGlobalPointCloudID << WHITE << std::endl;
@@ -127,26 +126,61 @@ namespace Mapping {
                 KFUpdate = mbKeyFrameUpdate;
                 mbKeyFrameUpdate = false;
             }
-            if (KFUpdate && N > lastKeyframeSize) {
+            if ((KFUpdate && N > lastKeyframeSize) || is_loop_for_remap) {
 //                if (colorImgs.size() != depthImgs.size() || depthImgs.size() != mvGlobalPointCloudsPose.size() ||
 //                    colorImgs.size() != mvGlobalPointCloudsPose.size())
 //                    continue;
                 std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
+                if (is_loop_for_remap) {
+                    std::cout << RED << "detect loop!" << std::endl;
+                    std::cout << "mvGlobalPointCloudsPose size: " << mvGlobalPointCloudsPose.size() << std::endl;
+                    std::cout << "depthImgs size: " << depthImgs.size() << std::endl;
+                    std::cout << "colorImgs size: " << colorImgs.size() << std::endl;
+                    globalMap->clear();
+                    for (int i = 0; i < depthImgs.size(); i += 1) {
+                        tmp->clear();
+                        for (int m = 0; m < depthImgs[i].rows; m += 3) {
+                            for (int n = 0; n < depthImgs[i].cols; n += 3) {
+                                float d = depthImgs[i].ptr<float>(m)[n] / mDepthMapFactor;
+                                if (d < 0 || d > 6) {
+                                    continue;
+                                }
+                                PointT p;
+                                p.z = d;
+                                p.x = (n - mcx) * p.z / mfx;
+                                p.y = (m - mcy) * p.z / mfy;
+                                p.r = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels()];
+                                p.g = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels() + 1];
+                                p.b = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels() + 2];
+                                tmp->points.push_back(p);
+                            }
+                        }
+                        cloud_voxel_tem->clear();
+                        tmp->is_dense = false;
+                        voxel.setInputCloud(tmp);
+                        voxel.setLeafSize(mresolution, mresolution, mresolution);
+                        voxel.filter(*cloud_voxel_tem);
+                        cloud1->clear();
+                        pcl::transformPointCloud(*cloud_voxel_tem, *cloud1,
+                                                 mvGlobalPointCloudsPose[i].inverse().matrix());
+                        *globalMap += *cloud1;
+                    }
+                    is_loop_for_remap = false;
+                } else {
+                    PointCloud::Ptr tem_cloud1(new PointCloud());
+                    std::cout << GREEN << "mvPosePointClouds.size(): " << mvGlobalPointCloudsPose.size() << std::endl;
+                    tem_cloud1 = generatePointCloud(colorImgs.back(), depthImgs.back(),
+                                                    mvGlobalPointCloudsPose.back());
 
-                PointCloud::Ptr tem_cloud1(new PointCloud());
-                std::cout << GREEN << "mvPosePointClouds.size(): " << mvGlobalPointCloudsPose.size() << std::endl;
-                tem_cloud1 = generatePointCloud(colorImgs.back(), depthImgs[colorImgs.size() - 1],
-                                                mvGlobalPointCloudsPose[colorImgs.size() - 1]);
-
-                if (tem_cloud1->empty())
-                    continue;
-                *globalMap += *tem_cloud1;
-
-                sensor_msgs::PointCloud2 local;
-                pcl::toROSMsg(*tem_cloud1, local);
-                local.header.stamp = ros::Time::now();
-                local.header.frame_id = "local";
-                pub_local_pointcloud.publish(local);
+                    if (tem_cloud1->empty())
+                        continue;
+                    *globalMap += *tem_cloud1;
+                    sensor_msgs::PointCloud2 local;
+                    pcl::toROSMsg(*tem_cloud1, local);
+                    local.header.stamp = ros::Time::now();
+                    local.header.frame_id = "local";
+                    pub_local_pointcloud.publish(local);
+                }
 
                 lastKeyframeSize = mvGlobalPointCloudsPose.size();
                 sensor_msgs::PointCloud2 output;
@@ -155,7 +189,7 @@ namespace Mapping {
                 output.header.frame_id = "world";
                 pub_global_pointcloud.publish(output);
                 pcl_viewer.showCloud(globalMap);
-                std::cout << WHITE << "show global map, size=" << globalMap->points.size() << std::endl;
+//                std::cout << WHITE << "show global map, size=" << globalMap->points.size() << std::endl;
             }
         }
         spinner.stop();
@@ -165,7 +199,6 @@ namespace Mapping {
                                     const sensor_msgs::Image::ConstPtr msgD,
                                     const geometry_msgs::PoseStamped::ConstPtr tcw,
                                     const nav_msgs::Path::ConstPtr path) {
-
         cv::Mat color, depth, depthDisp;
         geometry_msgs::PoseStamped Tcw = *tcw;
         cv_bridge::CvImageConstPtr pCvImage;
@@ -196,30 +229,39 @@ namespace Mapping {
         affine.linear() = Re;
         affine.translation() = Oe;
         Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix()); // 获取位姿矩阵
-        insertKeyFrame(color, depth, T);
+        kf_ids.push_back(msgRGB->header.seq);
         if (is_loop) {
-            std::vector<Eigen::Isometry3f> poses;
-            for (const auto &pose: path->poses) {
-                geometry_msgs::PoseStamped Tcw = pose;
-                Eigen::Affine3f affine;
-                Eigen::Vector3f Oe;
-                Oe(0) = Tcw.pose.position.x;
-                Oe(1) = Tcw.pose.position.y;
-                Oe(2) = Tcw.pose.position.z;
-                affine.translation() = Oe;
-                Eigen::Quaternionf q;
-                q.x() = Tcw.pose.orientation.x;
-                q.y() = Tcw.pose.orientation.y;
-                q.z() = Tcw.pose.orientation.z;
-                q.w() = Tcw.pose.orientation.w;
-                Eigen::Matrix3f Re(q);
-                affine.linear() = Re;
-                affine.translation() = Oe;
-                Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix()); // 获取位姿矩阵
-                poses.push_back(T);
-            }
             std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
+            std::vector<Eigen::Isometry3f> poses;
+            for (long i = 0; i < kf_ids.size(); i++) {
+                for (long j = i; j < path->poses.size(); j++) {
+                    if (kf_ids[i] == long(path->poses[j].header.seq)) {
+                        geometry_msgs::PoseStamped Tcw = path->poses[j];
+                        Eigen::Affine3f affine;
+                        Eigen::Vector3f Oe;
+                        Oe(0) = Tcw.pose.position.x;
+                        Oe(1) = Tcw.pose.position.y;
+                        Oe(2) = Tcw.pose.position.z;
+                        affine.translation() = Oe;
+                        Eigen::Quaternionf q;
+                        q.x() = Tcw.pose.orientation.x;
+                        q.y() = Tcw.pose.orientation.y;
+                        q.z() = Tcw.pose.orientation.z;
+                        q.w() = Tcw.pose.orientation.w;
+                        Eigen::Matrix3f Re(q);
+                        affine.linear() = Re;
+                        affine.translation() = Oe;
+                        Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix()); // 获取位姿矩阵
+                        poses.push_back(T);
+                        break;
+                    }
+                }
+            }
             mvGlobalPointCloudsPose.swap(poses);
+            is_loop = false;
+            is_loop_for_remap = true;
+        } else if (!is_loop_for_remap) {
+            insertKeyFrame(color, depth, T);
         }
     }
 
@@ -228,41 +270,8 @@ namespace Mapping {
      * @param if_loop
      */
     void PointCloudMapper::boolCallback(const std_msgs::Bool::ConstPtr &if_loop) {
+        std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
         is_loop = if_loop->data;
-        if (is_loop) {
-            std::cout << RED << "detect loop!" << std::endl;
-            std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
-            globalMap->clear();
-            for (int i = 0; i < mvGlobalPointCloudsPose.size(); i += 1) {
-                tmp->clear();
-                for (int m = 0; m < depthImgs[i].rows; m += 3) {
-                    for (int n = 0; n < depthImgs[i].cols; n += 3) {
-                        float d = depthImgs[i].ptr<float>(m)[n] / mDepthMapFactor;
-                        if (d < 0 || d > 6) {
-                            continue;
-                        }
-                        PointT p;
-                        p.z = d;
-                        p.x = (n - mcx) * p.z / mfx;
-                        p.y = (m - mcy) * p.z / mfy;
-
-                        p.r = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels()];
-                        p.g = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels() + 1];
-                        p.b = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels() + 2];
-
-                        tmp->points.push_back(p);
-                    }
-                }
-                cloud_voxel_tem->clear();
-                tmp->is_dense = false;
-                voxel.setInputCloud(tmp);
-                voxel.setLeafSize(mresolution, mresolution, mresolution);
-                voxel.filter(*cloud_voxel_tem);
-                cloud1->clear();
-                pcl::transformPointCloud(*cloud_voxel_tem, *cloud1, mvGlobalPointCloudsPose[i].inverse().matrix());
-                *globalMap += *cloud1;
-            }
-        }
     }
 
     void PointCloudMapper::reset() {

@@ -74,7 +74,9 @@ namespace Mapping {
         unsigned int index = 0;
         float mresolution = 0.04;   //点云显示精度
         float mcx = 0, mcy = 0, mfx = 0, mfy = 0;
-        float mDepthMapFactor = 100; //深度图尺度因子
+        float mDepthMapFactor = 1; //深度图尺度因子
+
+        bool is_loop_for_remap = false;
         size_t lastKeyframeSize = 0;
         size_t mGlobalPointCloudID = 0; //点云ID
         size_t mLastGlobalPointCloudID = 0;
@@ -84,6 +86,7 @@ namespace Mapping {
         std::vector<cv::Mat> colorImgs, depthImgs;
         std::vector<PointCloud> mvGlobalPointClouds; //关键帧对应的点云序列
         std::vector<Eigen::Isometry3f> mvGlobalPointCloudsPose; //所有关键帧的位姿
+        std::vector<unsigned long> kf_ids;
         PointCloud::Ptr globalMap, tmp, cloud_voxel_tem, cloud1;
 
         std::mutex keyframeMutex;
@@ -94,7 +97,8 @@ namespace Mapping {
 
         ros::NodeHandle nh;
         ros::AsyncSpinner spinner;
-        ros::Subscriber loop_sub;
+        ros::Subscriber loop_sub, id_sub;
+
         ros::Publisher pub_global_pointcloud, pub_local_pointcloud;
         image_transport::ImageTransport it;
         image_transport::SubscriberFilter *subImageColor, *subImageDepth;
