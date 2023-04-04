@@ -74,7 +74,7 @@ namespace Mapping {
         for (int m = 0; m < depth.rows; m += 3) {
             for (int n = 0; n < depth.cols; n += 3) {
                 float d = depth.ptr<float>(m)[n] / mDepthMapFactor;
-                if (d < 0 || d > 6) {
+                if (d < 0 || d > max_distance) {
                     continue;
                 }
                 PointT p;
@@ -119,6 +119,7 @@ namespace Mapping {
         spinner.start();
         while (ros::ok()) {
             ros::spinOnce();
+            //用于检测是否有关键帧加入
             KFUpdate = false;
             {
                 std::unique_lock<std::mutex> lck(keyframeMutex);
@@ -126,11 +127,10 @@ namespace Mapping {
                 KFUpdate = mbKeyFrameUpdate;
                 mbKeyFrameUpdate = false;
             }
+            //是否有关键帧加入或是否是回环模式
             if ((KFUpdate && N > lastKeyframeSize) || is_loop_for_remap) {
-//                if (colorImgs.size() != depthImgs.size() || depthImgs.size() != mvGlobalPointCloudsPose.size() ||
-//                    colorImgs.size() != mvGlobalPointCloudsPose.size())
-//                    continue;
                 std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
+                //如果是回环的话根据BA后的位姿重新绘制点云
                 if (is_loop_for_remap) {
                     std::cout << RED << "detect loop!" << std::endl;
                     std::cout << "mvGlobalPointCloudsPose size: " << mvGlobalPointCloudsPose.size() << std::endl;
@@ -142,7 +142,7 @@ namespace Mapping {
                         for (int m = 0; m < depthImgs[i].rows; m += 3) {
                             for (int n = 0; n < depthImgs[i].cols; n += 3) {
                                 float d = depthImgs[i].ptr<float>(m)[n] / mDepthMapFactor;
-                                if (d < 0 || d > 6) {
+                                if (d < 0 || d > max_distance) {
                                     continue;
                                 }
                                 PointT p;
@@ -167,6 +167,7 @@ namespace Mapping {
                     }
                     is_loop_for_remap = false;
                 } else {
+                    //如果有新点云加入则拼接点云
                     PointCloud::Ptr tem_cloud1(new PointCloud());
                     std::cout << GREEN << "mvPosePointClouds.size(): " << mvGlobalPointCloudsPose.size() << std::endl;
                     tem_cloud1 = generatePointCloud(colorImgs.back(), depthImgs.back(),
@@ -229,14 +230,14 @@ namespace Mapping {
         affine.linear() = Re;
         affine.translation() = Oe;
         Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix()); // 获取位姿矩阵
-        kf_ids.push_back(msgRGB->header.seq);
         if (is_loop) {
             std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
             std::vector<Eigen::Isometry3f> poses;
-            for (long i = 0; i < kf_ids.size(); i++) {
-                for (long j = i; j < path->poses.size(); j++) {
-                    if (kf_ids[i] == long(path->poses[j].header.seq)) {
-                        geometry_msgs::PoseStamped Tcw = path->poses[j];
+            std::vector<cv::Mat> colors, depths;
+            for (long i = 0; i < path->poses.size(); i++) {
+                for (long j = i; j < kf_ids.size(); j++) {
+                    if (kf_ids[j] == long(path->poses[i].header.seq)) {
+                        geometry_msgs::PoseStamped Tcw = path->poses[i];
                         Eigen::Affine3f affine;
                         Eigen::Vector3f Oe;
                         Oe(0) = Tcw.pose.position.x;
@@ -251,16 +252,22 @@ namespace Mapping {
                         Eigen::Matrix3f Re(q);
                         affine.linear() = Re;
                         affine.translation() = Oe;
-                        Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix()); // 获取位姿矩阵
+                        Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix());
                         poses.push_back(T);
+                        colors.push_back(colorImgs[j]);
+                        depths.push_back(depthImgs[j]);
                         break;
                     }
                 }
             }
-            mvGlobalPointCloudsPose.swap(poses);
             is_loop = false;
             is_loop_for_remap = true;
+            if (poses.empty()) return;
+            mvGlobalPointCloudsPose.swap(poses);
+            colorImgs.swap(colors);
+            depthImgs.swap(depths);
         } else if (!is_loop_for_remap) {
+            kf_ids.push_back(msgRGB->header.seq);
             insertKeyFrame(color, depth, T);
         }
     }
@@ -271,7 +278,7 @@ namespace Mapping {
      */
     void PointCloudMapper::boolCallback(const std_msgs::Bool::ConstPtr &if_loop) {
         std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
-        is_loop = if_loop->data;
+        is_loop = bool(if_loop->data);
     }
 
     void PointCloudMapper::reset() {

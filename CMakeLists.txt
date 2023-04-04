@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 2.8.3)
 project(pointcloud_mapping)
 set(CMAKE_BUILD_TYPE Release)
 
-
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBT_USE_DOUBLE_PRECISION -Wall")
 # Unused warnings
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wuninitialized -Winit-self -Wunused-function -Wunused-label -Wunused-variable -Wunused-but-set-variable -Wunused-but-set-parameter")
@@ -21,10 +20,11 @@ ELSE ()
     MESSAGE(ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support. Please use a different C++ compiler.")
 ENDIF ()
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+set(cv_bridge_DIR "/home/tioeare/cvbridge_build_ws/devel/share/cv_bridge/cmake")
+set(OpenCV_DIR /usr/local/share/opencv4)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-set(cv_bridge_DIR "/home/tioeare/cvbridge_build_ws/devel/share/cv_bridge/cmake")
 set(OpenCV_DIR /usr/local/share/opencv4)
 find_package(catkin REQUIRED)
 find_package(OpenCV 4.5.5 REQUIRED)
@@ -87,11 +87,11 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-add_message_files(
-  FILES
-  key_frame_id_stamp.msg
-  if_loop_stamp.msg
-)
+#add_message_files(
+#  FILES
+#  key_frame_id_stamp.msg
+#  if_loop_stamp.msg
+#)
 
 ## Generate services in the 'srv' folder
 # add_service_files(
@@ -108,12 +108,12 @@ add_message_files(
 # )
 
 ## Generate added messages and services with any dependencies listed here
- generate_messages(
-   DEPENDENCIES
-   std_msgs  # Or other packages containing msgs
-   geometry_msgs# Or other packages containing msgs
-   sensor_msgs  # Or other packages containing msgs
- )
+# generate_messages(
+#   DEPENDENCIES
+#   std_msgs  # Or other packages containing msgs
+#   geometry_msgs# Or other packages containing msgs
+#   sensor_msgs  # Or other packages containing msgs
+# )
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -149,7 +149,6 @@ catkin_package(
         #LIBRARIES orbslam2_ros
         #CATKIN_DEPENDS message_runtime
         #DEPENDS system_lib
-
 )
 
 ###########

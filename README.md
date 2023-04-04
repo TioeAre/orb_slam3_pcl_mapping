@@ -37,29 +37,85 @@ https://github.com/xiaobainixi/ORB-SLAM2_RGBD_DENSE_MAP
 
 ### void viewer();
 
-唯一一个由外部调用的函数，主要用于点云的拼接和显示
+唯一一个由外部调用的函数，主要用于点云的拼接和显示，以及判断当前是否检测到回环
 
 ```c++
-KFUpdate = false;
-{
-    std::unique_lock<std::mutex> lck(keyframeMutex);
-    N = mvGlobalPointCloudsPose.size();
-    KFUpdate = mbKeyFrameUpdate;
-    mbKeyFrameUpdate = false;
+while (ros::ok()) {
+    ros::spinOnce();
+    //用于检测是否有关键帧加入
+    KFUpdate = false;
+    {
+        std::unique_lock<std::mutex> lck(keyframeMutex);
+        N = mvGlobalPointCloudsPose.size();
+        KFUpdate = mbKeyFrameUpdate;
+        mbKeyFrameUpdate = false;
+    }
+    //是否有关键帧加入或是否是回环模式
+    if ((KFUpdate && N > lastKeyframeSize) || is_loop_for_remap) {
+        std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
+        //如果是回环的话根据BA后的位姿重新绘制点云
+        if (is_loop_for_remap) {
+            std::cout << RED << "detect loop!" << std::endl;
+            std::cout << "mvGlobalPointCloudsPose size: " << mvGlobalPointCloudsPose.size() << std::endl;
+            std::cout << "depthImgs size: " << depthImgs.size() << std::endl;
+            std::cout << "colorImgs size: " << colorImgs.size() << std::endl;
+            globalMap->clear();
+            for (int i = 0; i < depthImgs.size(); i += 1) {
+                tmp->clear();
+                for (int m = 0; m < depthImgs[i].rows; m += 3) {
+                    for (int n = 0; n < depthImgs[i].cols; n += 3) {
+                        float d = depthImgs[i].ptr<float>(m)[n] / mDepthMapFactor;
+                        if (d < 0 || d > max_distance) {
+                            continue;
+                        }
+                        PointT p;
+                        p.z = d;
+                        p.x = (n - mcx) * p.z / mfx;
+                        p.y = (m - mcy) * p.z / mfy;
+                        p.r = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels()];
+                        p.g = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels() + 1];
+                        p.b = colorImgs[i].data[m * colorImgs[i].step + n * colorImgs[i].channels() + 2];
+                        tmp->points.push_back(p);
+                    }
+                }
+                cloud_voxel_tem->clear();
+                tmp->is_dense = false;
+                voxel.setInputCloud(tmp);
+                voxel.setLeafSize(mresolution, mresolution, mresolution);
+                voxel.filter(*cloud_voxel_tem);
+                cloud1->clear();
+                pcl::transformPointCloud(*cloud_voxel_tem, *cloud1,
+                                         mvGlobalPointCloudsPose[i].inverse().matrix());
+                *globalMap += *cloud1;
+            }
+            is_loop_for_remap = false;
+        } else {
+            //如果有新点云加入则拼接点云
+            PointCloud::Ptr tem_cloud1(new PointCloud());
+            std::cout << GREEN << "mvPosePointClouds.size(): " << mvGlobalPointCloudsPose.size() << std::endl;
+            tem_cloud1 = generatePointCloud(colorImgs.back(), depthImgs.back(),
+                                            mvGlobalPointCloudsPose.back());
+
+            if (tem_cloud1->empty())
+                continue;
+            *globalMap += *tem_cloud1;
+            sensor_msgs::PointCloud2 local;
+            pcl::toROSMsg(*tem_cloud1, local);
+            local.header.stamp = ros::Time::now();
+            local.header.frame_id = "local";
+            pub_local_pointcloud.publish(local);
+        }
+
+        lastKeyframeSize = mvGlobalPointCloudsPose.size();
+        sensor_msgs::PointCloud2 output;
+        pcl::toROSMsg(*globalMap, output);
+        output.header.stamp = ros::Time::now();
+        output.header.frame_id = "world";
+        pub_global_pointcloud.publish(output);
+        pcl_viewer.showCloud(globalMap);
+    //                std::cout << WHITE << "show global map, size=" << globalMap->points.size() << std::endl;
+    }
 }
-```
-
-用于检测是否有新加入的关键帧
-
-```c++
-std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
-PointCloud::Ptr tem_cloud1(new PointCloud());
-tem_cloud1 = generatePointCloud(colorImgs.back(), depthImgs[colorImgs.size() - 1],
-mvGlobalPointCloudsPose[colorImgs.size() - 1]);
-
-if (tem_cloud1->empty())
-	continue;
-*globalMap += *tem_cloud1;
 ```
 
 增加线程锁是为了避免与后面的回环造成数据冲突，每有一个新的关键帧加入时，将关键帧对应的点云和rgb图像以及此时相机的位姿进行转化，转化到世界坐标系下的彩色点云
@@ -70,41 +126,68 @@ if (tem_cloud1->empty())
 
 当检测到回环是，不再接受某一关键帧的位姿信息，而是接收BA后的相机轨迹，再将每一帧的轨迹存储到`Eigen::Isometry3f`的`vector`中
 
+```c++
+if (is_loop) {
+    std::unique_lock<std::mutex> lock_loop(loopUpdateMutex);
+    std::vector<Eigen::Isometry3f> poses;
+    std::vector<cv::Mat> colors, depths;
+    for (long i = 0; i < path->poses.size(); i++) {
+        for (long j = i; j < kf_ids.size(); j++) {
+            if (kf_ids[j] == long(path->poses[i].header.seq)) {
+                geometry_msgs::PoseStamped Tcw = path->poses[i];
+                Eigen::Affine3f affine;
+                Eigen::Vector3f Oe;
+                Oe(0) = Tcw.pose.position.x;
+                Oe(1) = Tcw.pose.position.y;
+                Oe(2) = Tcw.pose.position.z;
+                affine.translation() = Oe;
+                Eigen::Quaternionf q;
+                q.x() = Tcw.pose.orientation.x;
+                q.y() = Tcw.pose.orientation.y;
+                q.z() = Tcw.pose.orientation.z;
+                q.w() = Tcw.pose.orientation.w;
+                Eigen::Matrix3f Re(q);
+                affine.linear() = Re;
+                affine.translation() = Oe;
+                Eigen::Isometry3f T = Eigen::Isometry3f(affine.cast<float>().matrix());
+                poses.push_back(T);
+                colors.push_back(colorImgs[j]);
+                depths.push_back(depthImgs[j]);
+                break;
+            }
+        }
+    }
+    is_loop = false;
+    is_loop_for_remap = true;
+    if (poses.empty()) return;
+    mvGlobalPointCloudsPose.swap(poses);
+    colorImgs.swap(colors);
+    depthImgs.swap(depths);
+} else if (!is_loop_for_remap) {
+    kf_ids.push_back(msgRGB->header.seq);
+    insertKeyFrame(color, depth, T);
+}
+```
+
 ### void PointCloudMapper::boolCallback()
 
-检测到回环时调用的回调函数，主要用于重新计算点云，将关键帧的点云与BA后的位姿对应起来并拼接
+检测到回环时调用的回调函数
 
 ## orb slam3修改部分
 
 ### ros_rgbd.cc
 
 ```c++
-#include<iostream>
-#include<chrono>
-
-#include <ros/ros.h>
-#include <ros/spinner.h>
-#include <std_msgs/Bool.h>
-#include <sensor_msgs/Image.h>
-#include <nav_msgs/Path.h>
-#include <nav_msgs/Odometry.h>
-#include <tf/transform_broadcaster.h>
-
-#include <cv_bridge/cv_bridge.h>
-#include <message_filters/subscriber.h>
-#include <message_filters/sync_policies/approximate_time.h>
-
-#include <opencv2/core/core.hpp>
-
-#include"../../../include/System.h"
+#include...
 
 using namespace std;
 
 class ImageGrabber {
 public:
+    vector<unsigned long> key_frame_id;
+    uint32_t pub_id = 0;
     ros::NodeHandle nh1;
     ros::Publisher pub_rgb, pub_depth, pub_tcw, pub_camerapath, pub_odom, pub_isLoop;
-    size_t mcounter = 0;
     nav_msgs::Path camerapath;
 
     ImageGrabber(ORB_SLAM3::System *pSLAM) : mpSLAM(pSLAM), nh1("~") {
@@ -157,7 +240,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-tf::Pose trans_pose(Sophus::SE3f se3, bool& if_empty) {
+tf::Pose trans_pose(Sophus::SE3f se3, bool &if_empty) {
     cv::Mat Tcw = (cv::Mat_<float>(4, 4) <<
                                          se3.matrix()(0, 0), se3.matrix()(0, 1), se3.matrix()(0, 2), se3.matrix()(0, 3),
             se3.matrix()(1, 0), se3.matrix()(1, 1), se3.matrix()(1, 2), se3.matrix()(1, 3),
@@ -169,7 +252,7 @@ tf::Pose trans_pose(Sophus::SE3f se3, bool& if_empty) {
     tf::Matrix3x3 M(RWC.at<float>(0, 0), RWC.at<float>(0, 1), RWC.at<float>(0, 2),
                     RWC.at<float>(1, 0), RWC.at<float>(1, 1), RWC.at<float>(1, 2),
                     RWC.at<float>(2, 0), RWC.at<float>(2, 1), RWC.at<float>(2, 2));
-    tf::Vector3 V(tWC.at<float>(0), tWC.at<float>(1), tWC.at<float>(2));
+    tf::Vector3 V(tWC.at<float>(0) / 25, tWC.at<float>(1) / 25, tWC.at<float>(2) / 25);
     tf::Quaternion q;
     M.getRotation(q);
     tf::Pose tf_pose(q, V);
@@ -201,13 +284,12 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr &msgRGB, const sens
     if (cv_ptrRGB->image.empty() || cv_ptrD->image.empty()) return;
     Sophus::SE3f se3 = mpSLAM->TrackRGBD(cv_ptrRGB->image, cv_ptrD->image, cv_ptrRGB->header.stamp.toSec());
     bool if_empty;
-    tf::Pose tf_pose = trans_pose(mpSLAM->current_all_KF.back()->GetPose(), if_empty);
+    tf::Pose tf_pose = trans_pose(se3, if_empty);
     if (!if_empty) {
         std_msgs::Header header;
         header.stamp = msgRGB->header.stamp;
         header.seq = msgRGB->header.seq;
         header.frame_id = "camera";
-        //cout<<"depth type: "<< depth. type()<<endl;
         sensor_msgs::Image::ConstPtr rgb_msg = msgRGB;
         sensor_msgs::Image::ConstPtr depth_msg = msgD;
 
@@ -216,32 +298,36 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr &msgRGB, const sens
         tf::poseTFToMsg(tf_pose, tcw_msg.pose);
 
         camerapath.header = header;
-        camerapath.poses.push_back(tcw_msg);
         std_msgs::Bool isLoop_msg;
         isLoop_msg.data = mpSLAM->is_loop;
         if (mpSLAM->is_loop) {
-            pub_isLoop.publish(isLoop_msg);
             vector<geometry_msgs::PoseStamped> after_loop_poses;
-            for(auto&& it : mpSLAM->current_all_KF){
-                tf::Pose tf_pose = trans_pose(it->GetPose(), if_empty);
-                it->mnId;
-                if (if_empty) continue;
-                geometry_msgs::PoseStamped tcw_msg;
-                tcw_msg.header = header;
-                tf::poseTFToMsg(tf_pose, tcw_msg.pose);
-                after_loop_poses.push_back(tcw_msg);
-                camerapath.poses.swap(after_loop_poses);
+            for (long i = 0; i < key_frame_id.size(); i++) {
+                for (long j = 0; j < mpSLAM->current_all_KF.size(); j++) {
+                    if (key_frame_id[i] == mpSLAM->current_all_KF[j]->mnId) {
+                        tf_pose = trans_pose(mpSLAM->current_all_KF[j]->GetPose(), if_empty);
+                        geometry_msgs::PoseStamped tcw_msg1;
+                        tf::poseTFToMsg(tf_pose, tcw_msg1.pose);
+                        tcw_msg1.header = header;
+                        tcw_msg1.header.seq = i;
+                        after_loop_poses.push_back(tcw_msg1);
+                        break;
+                    }
+                }
             }
+            camerapath.poses.swap(after_loop_poses);
         }
-        pub_camerapath.publish(camerapath);
+        if (mpSLAM->is_loop)
+            pub_isLoop.publish(isLoop_msg);
         if (mpSLAM->is_key_frame) {
+            key_frame_id.push_back(mpSLAM->current_KF_mnId);
+            pub_camerapath.publish(camerapath);
             pub_tcw.publish(tcw_msg);
             pub_rgb.publish(rgb_msg);
             pub_depth.publish(depth_msg);
         }
     }
 }
-
 ```
 
 主要用于发布相关话题
@@ -251,46 +337,56 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr &msgRGB, const sens
 ```c++
 Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp,
                                    const vector<IMU::Point> &vImuMeas, string filename) {
-    is_key_frame = mpTracker->is_key_frame;
+    ...
+	is_key_frame = false;
+    is_key_frame = mpLocalMapper->is_key_frame;
     is_loop = false;
     is_loop = mpTracker->is_loop;
     current_all_KF = mpAtlas->GetAllKeyFrames();
-    sort(current_all_KF.begin(),current_all_KF.end(),KeyFrame::lId);
-    if (is_loop){
-        mpTracker->is_loop = false; //本来应该加线程锁，但是应该几乎不会出现这种错误，除非算力低到5秒一帧
-    }								//用于防止连续几帧中因为回环检测线程的休眠让程序重复再同一位置回环
-    
+    if (is_key_frame) current_KF_mnId = mpLocalMapper->GetCurrKF()->mnId;
+    if (mpTracker->is_loop){
+        std::unique_lock<std::mutex> lock_loop(mpTracker->is_loop_mutex);
+        mpTracker->is_loop = false;
+    }
+    if (mpLocalMapper->is_key_frame){
+        std::unique_lock<std::mutex> lock_kf(mpLocalMapper->is_keyframe_mutex);
+        mpLocalMapper->is_key_frame = false;
+    }
 }
 ```
 
 主要增加了以上用于判断是否为关键帧，是否检测到回环的相关变量和判断，并获取此时所有的关键帧
 
-### Tracking.cc
+### LocalMapping.cc
 
 ```c++
-void Tracking::Track() {
-    
-	if (bNeedKF && (bOK || (mInsertKFsLost && mState == RECENTLY_LOST &&
-                            (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO ||
-                             mSensor == System::IMU_RGBD)))) {
-        CreateNewKeyFrame();
-        is_key_frame = true;
-    } else {
-        is_key_frame = false;
+void LocalMapping::Run() {
+    if (CheckNewKeyFrames() && !mbBadImu) {
+        {
+            std::unique_lock<std::mutex> lock_kf(is_keyframe_mutex);
+            is_key_frame = true;
+        }
+        MapPointCulling();
+        ...
     }
 }
 ```
 
-主要在`Track()`中添加了判断是否为关键帧
+添加了判断是否为关键帧，注意要在构建`LocalMapping`中添加，因为BA时使用的是地图点，但好像并不是所有关键帧都在地图点中。如果在`Track()`中添加的话会导致`keyFrame`与优化后`mpAtlas->GetAllKeyFrames()`返回的数目不一致
 
 ### LoopClosing.cc
 
 ```c++
 while(1){
-     mpTracker->is_loop = false;
 	...
 	if (mbLoopDetected) {
-        mpTracker->is_loop = true;
+        ...
+        {
+            std::unique_lock<std::mutex> lock_loop(mpTracker->is_loop_mutex);
+            mpTracker->is_loop = true;
+        }
+        mpLoopLastCurrentKF->SetErase();
+        ...
     }
 }
 ```
@@ -299,7 +395,9 @@ while(1){
 
 ## 运行效果
 
-![ibZAzc.png](https://i.328888.xyz/2023/04/03/ibZAzc.png)
+[bilibili](https://www.bilibili.com/video/BV1oa4y1M7Hk/?vd_source=648134b4607a710e0bb6f95aa5fcfd98)
+
+![ijKBfx.png](https://i.328888.xyz/2023/04/04/ijKBfx.png)
 
 使用intel relsense d455回绕一圈后构建的点云图
 

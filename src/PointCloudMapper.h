@@ -68,11 +68,12 @@ namespace Mapping {
         void viewer();
 
     protected:
+        float max_distance = 6;
         bool is_loop = false;
         std::string topicColor, topicDepth, topicTcw, topicIsLoop, topicPath;
         bool mbKeyFrameUpdate = false;  //有新的关键帧插入
         unsigned int index = 0;
-        float mresolution = 0.04;   //点云显示精度
+        float mresolution = 1;   //点云显示精度
         float mcx = 0, mcy = 0, mfx = 0, mfy = 0;
         float mDepthMapFactor = 1; //深度图尺度因子
 
