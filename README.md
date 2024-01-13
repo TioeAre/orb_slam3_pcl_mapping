@@ -29,6 +29,8 @@ https://blog.csdn.net/crp997576280/article/details/104220926
 
 https://github.com/xiaobainixi/ORB-SLAM2_RGBD_DENSE_MAP
 
+`注意`: 这个仓库本身可以作为单独的一个用作接受点云与相应位姿, 并可视化保存拼接后的点云的功能包, 并不一定需要嵌入到orb slam中
+
 ## 代码简介
 
 ### PointCloudMapper.cc
@@ -174,6 +176,8 @@ if (is_loop) {
 检测到回环时调用的回调函数
 
 ## orb slam3修改部分
+
+由于当时初学时文档没有写的很完善, 部分.h文件中定义的变量没有写出来,完整修改后的orb slam3的代码可以参考[repo](https://github.com/TioeAre/ORB_SLAM3)
 
 ### ros_rgbd.cc
 
